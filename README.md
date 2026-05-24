@@ -44,10 +44,31 @@ Copy-Item .env.example .env
 FREEBUFF_TOKEN=你的 Freebuff Bearer token
 FREEBUFF_API_KEY=本地 OpenAI API key，可留空
 FREEBUFF_AD_PROVIDERS=gravity,zeroclick
+FREEBUFF_PROXY_ENABLED=false
+FREEBUFF_PROXY_URL=
 FREEBUFF_DEBUG=false
 FREEBUFF_LOG_LEVEL=INFO
 FREEBUFF_LOG_BODY_CHARS=2000
 FREEBUFF_LOG_COLOR=true
+```
+
+### 代理
+
+默认不启用代理，所有上游请求直连，且不会读取系统 `HTTP_PROXY` / `HTTPS_PROXY`。
+
+需要让所有上游请求经过代理时，在 `.env` 中开启：
+
+```dotenv
+FREEBUFF_PROXY_ENABLED=true
+FREEBUFF_PROXY_URL=http://127.0.0.1:7890
+```
+
+支持 HTTP 和 SOCKS 代理，例如：
+
+```dotenv
+FREEBUFF_PROXY_URL=http://127.0.0.1:7890
+FREEBUFF_PROXY_URL=socks5://127.0.0.1:1080
+FREEBUFF_PROXY_URL=socks5h://127.0.0.1:1080
 ```
 
 当前内置 Freebuff 模型：

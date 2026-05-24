@@ -144,6 +144,13 @@ async def chat_completions(request: Request) -> Any:
                 run,
                 render_debug(payload, settings.log_body_chars),
             )
+    except CodebuffError as error:
+        logger.warning(
+            "failed to prepare chat completion: %s",
+            error,
+            exc_info=settings.debug,
+        )
+        return _error_response(error)
     except Exception as error:
         logger.exception("failed to prepare chat completion")
         return _error_response(error)
@@ -323,5 +330,12 @@ async def _finalize_run_with_client(
         )
         await client.finish_run(run.run_id, total_steps=3)
         logger.debug("finalize run done run_id=%s", run.run_id)
+    except CodebuffError as error:
+        logger.warning(
+            "finalize run failed run_id=%s: %s",
+            run.run_id,
+            error,
+            exc_info=client.settings.debug,
+        )
     except Exception:
         logger.exception("finalize run failed run_id=%s", run.run_id)

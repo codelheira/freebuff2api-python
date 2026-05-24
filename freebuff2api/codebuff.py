@@ -49,6 +49,8 @@ class CodebuffClient:
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(settings.request_timeout, read=None),
             follow_redirects=True,
+            proxy=settings.upstream_proxy_url,
+            trust_env=False,
         )
         self._agents_validated = False
         self._validate_lock = asyncio.Lock()
@@ -89,12 +91,15 @@ class CodebuffClient:
     ) -> dict[str, Any]:
         url = f"{self.settings.codebuff_api_url}{path}"
         request_headers = headers or self._headers(json_body=body is not None)
-        response = await self._client.request(
-            method,
-            url,
-            json=body,
-            headers=request_headers,
-        )
+        try:
+            response = await self._client.request(
+                method,
+                url,
+                json=body,
+                headers=request_headers,
+            )
+        except httpx.RequestError as error:
+            raise _network_error(method, url, error) from error
         if self.settings.debug:
             logger.debug(
                 "upstream json request method=%s url=%s headers=%s body=%s",
@@ -109,10 +114,7 @@ class CodebuffClient:
                 render_debug(response.text, self.settings.log_body_chars),
             )
         if response.status_code >= 400:
-            raise CodebuffError(
-                f"Codebuff request failed: {response.status_code} {response.text[:500]}",
-                502,
-            )
+            raise _upstream_error(response)
         if not response.content:
             return {}
         return response.json()
@@ -237,7 +239,7 @@ class CodebuffClient:
     ) -> dict[str, Any]:
         body = {
             "provider": provider,
-            "messages": messages or [],
+            "messages": _ad_messages(messages),
             "sessionId": self.settings.session_id,
             "device": {
                 "os": self.settings.os_name,
@@ -290,15 +292,19 @@ class CodebuffClient:
     async def report_zeroclick_impressions(self, ids: list[str]) -> None:
         if not ids:
             return
-        response = await self._client.post(
-            f"{self.settings.zeroclick_api_url}/api/v2/impressions",
-            json={"ids": ids},
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "*/*",
-                "User-Agent": "Bun/1.3.11",
-            },
-        )
+        url = f"{self.settings.zeroclick_api_url}/api/v2/impressions"
+        try:
+            response = await self._client.post(
+                url,
+                json={"ids": ids},
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "*/*",
+                    "User-Agent": "Bun/1.3.11",
+                },
+            )
+        except httpx.RequestError as error:
+            raise _network_error("POST", url, error) from error
         if self.settings.debug:
             logger.debug(
                 "zeroclick impression ids=%s status=%s body=%s",
@@ -403,37 +409,40 @@ class CodebuffClient:
                 "ai-sdk/provider-utils/3.0.20 runtime/browser"
             ),
         )
-        async with self._client.stream(
-            "POST",
-            url,
-            json=payload,
-            headers=request_headers,
-        ) as response:
-            if self.settings.debug:
-                logger.debug(
-                    "chat stream request url=%s headers=%s payload=%s",
-                    url,
-                    redact_headers(request_headers),
-                    render_debug(payload, self.settings.log_body_chars),
-                )
-                logger.debug(
-                    "chat stream response status=%s headers=%s",
-                    response.status_code,
-                    redact_headers(dict(response.headers)),
-                )
-            if response.status_code >= 400:
-                text = await response.aread()
-                raise CodebuffError(
-                    f"Codebuff chat failed: {response.status_code} {text[:500]!r}",
-                    502,
-                )
-            async for line in response.aiter_lines():
+        try:
+            async with self._client.stream(
+                "POST",
+                url,
+                json=payload,
+                headers=request_headers,
+            ) as response:
                 if self.settings.debug:
                     logger.debug(
-                        "chat stream line=%s",
-                        render_debug(line, self.settings.log_body_chars),
+                        "chat stream request url=%s headers=%s payload=%s",
+                        url,
+                        redact_headers(request_headers),
+                        render_debug(payload, self.settings.log_body_chars),
                     )
-                yield line
+                    logger.debug(
+                        "chat stream response status=%s headers=%s",
+                        response.status_code,
+                        redact_headers(dict(response.headers)),
+                    )
+                if response.status_code >= 400:
+                    text = await response.aread()
+                    raise CodebuffError(
+                        f"Codebuff chat failed: {response.status_code} {text[:500]!r}",
+                        502,
+                    )
+                async for line in response.aiter_lines():
+                    if self.settings.debug:
+                        logger.debug(
+                            "chat stream line=%s",
+                            render_debug(line, self.settings.log_body_chars),
+                        )
+                    yield line
+        except httpx.RequestError as error:
+            raise _network_error("POST", url, error) from error
 
 
 class SessionManager:
@@ -567,3 +576,61 @@ def _queue_poll_delay(estimated_wait_ms: Any) -> float:
     if isinstance(estimated_wait_ms, int | float) and estimated_wait_ms > 0:
         return min(max(float(estimated_wait_ms) / 1000.0, 0.25), 2.0)
     return 0.25
+
+
+def _network_error(method: str, url: str, error: httpx.RequestError) -> CodebuffError:
+    detail = str(error).strip()
+    suffix = f": {detail}" if detail else ""
+    return CodebuffError(
+        f"Codebuff request failed: {method} {url} network error "
+        f"({type(error).__name__}){suffix}",
+        502,
+    )
+
+
+def _upstream_error(response: httpx.Response) -> CodebuffError:
+    text = response.text[:500]
+    if response.status_code == 409:
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+        if data.get("error") == "session_model_mismatch":
+            upstream_message = data.get("message") or text
+            return CodebuffError(
+                "Codebuff 409 session_model_mismatch: "
+                f"{upstream_message} 当前 IP/区域受限；请换用 US 服务器或 US 出口 IP 后重试。",
+                409,
+            )
+
+    return CodebuffError(
+        f"Codebuff request failed: {response.status_code} {text}",
+        502,
+    )
+
+
+def _ad_messages(messages: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    return [
+        {
+            "role": str(message.get("role") or "user"),
+            "content": _ad_message_content(message.get("content")),
+        }
+        for message in messages or []
+    ]
+
+
+def _ad_message_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    if isinstance(content, list):
+        parts = [
+            str(part.get("text"))
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        ]
+        return "\n".join(parts)
+    if isinstance(content, dict) and isinstance(content.get("text"), str):
+        return content["text"]
+    return str(content)
