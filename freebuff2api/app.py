@@ -100,7 +100,6 @@ async def healthz(request: Request) -> dict[str, Any]:
 
 @app.get("/v1/models")
 async def list_models(request: Request) -> dict[str, Any]:
-    _check_local_auth(request)
     return models_response()
 
 
