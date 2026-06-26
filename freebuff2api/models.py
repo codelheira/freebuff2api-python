@@ -62,7 +62,21 @@ GEMINI_FREE_MODELS: tuple[FreebuffModel, ...] = (
     ),
 )
 
-ALL_MODELS = FREEBUFF_MODELS + GEMINI_FREE_MODELS
+REAL_MODELS: tuple[FreebuffModel, ...] = (
+    FreebuffModel("gpt-4o", "gpt-4o", "openai"),
+    FreebuffModel("gpt-4o-mini", "gpt-4o-mini", "openai"),
+    FreebuffModel("gpt-4.5-mini", "gpt-4.5-mini", "openai"),
+    FreebuffModel("o1-mini", "o1-mini", "openai"),
+    FreebuffModel("o1-preview", "o1-preview", "openai"),
+    FreebuffModel("claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022", "anthropic"),
+    FreebuffModel("claude-3-5-haiku-20241022", "claude-3-5-haiku-20241022", "anthropic"),
+    FreebuffModel("claude-3-opus-20240229", "claude-3-opus-20240229", "anthropic"),
+    FreebuffModel("gemini-1.5-pro", "gemini-1.5-pro", "google"),
+    FreebuffModel("gemini-1.5-flash", "gemini-1.5-flash", "google"),
+    FreebuffModel("gemini-2.0-flash", "gemini-2.0-flash", "google"),
+)
+
+ALL_MODELS = FREEBUFF_MODELS + GEMINI_FREE_MODELS + REAL_MODELS
 
 
 def resolve_model(requested: str | None) -> FreebuffModel:
@@ -71,7 +85,7 @@ def resolve_model(requested: str | None) -> FreebuffModel:
     for model in ALL_MODELS:
         if model.id == requested:
             return model
-    raise ValueError(f"Unsupported Freebuff model: {requested}")
+    return FreebuffModel(id=requested, agent_id=requested)
 
 
 def models_response() -> dict[str, object]:
